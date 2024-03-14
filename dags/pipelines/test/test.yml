@@ -1,0 +1,96 @@
+resources:
+  driver:
+    cores: 1
+    memory: 2g
+  executor:
+    num: 3
+    total_cores: 3
+    cores: 1
+    memory: 1g
+
+nodes:
+
+  connection_authman:
+    type: "source"
+    stream: false
+    format: jdbc
+    options:
+      driver: "org.postgresql.Driver"
+      url: "jdbc:postgresql://45.61.174.228:9432/authman_db"
+      user: "metabase"
+      password: "NM5wDn8mSTVgNq9m8gksdH"
+      database: "authman_db"
+      query: |
+        select * from users
+
+  connection_payment:
+    type: "source"
+    stream: false
+    format: jdbc
+    options:
+      driver: "org.postgresql.Driver"
+      url: "jdbc:postgresql://45.61.174.228:9432/billing_db"
+      user: "metabase"
+      password: "NM5wDn8mSTVgNq9m8gksdH"
+      database: "billing_db"
+      query: |
+        select * from payment
+
+    connection_refund:
+      type: "source"
+      stream: false
+      format: jdbc
+      options:
+        driver: "org.postgresql.Driver"
+        url: "jdbc:postgresql://45.61.174.228:9432/billing_db"
+        user: "metabase"
+        password: "NM5wDn8mSTVgNq9m8gksdH"
+        database: "billing_db"
+        query: |
+          select * from refund
+
+  test-process:
+    type: "processor"
+    format: query
+    options:
+      parents:
+        - connection_authman
+        - connection_payment
+        - connection_refund
+      query: |
+        SELECT
+        CURDATE() AS date,
+        COUNT(DISTINCT CASE WHEN u.registered_at > CURDATE() - INTERVAL 1 DAY AND u.registered_at < CURDATE() THEN u.id END) AS daily_reg,
+        COUNT(p.id) AS reg_user_payment_attempt,
+        COUNT(DISTINCT CASE WHEN p.status = 'accepted' THEN p.customerId END) AS paid_new_user,
+        COUNT(CASE WHEN p.status = 'accepted' THEN 1 END) AS reg_user_payments,
+        SUM(CASE WHEN p.status = 'accepted' THEN p.price END) AS reg_user_total_amount
+        FROM
+        connection_authman u
+        LEFT JOIN
+        connection_payment p ON u.id = p.customerId
+        LEFT JOIN
+        connection_refund r ON p.id = r.paymentId
+        WHERE
+        p.paymentGateway NOT IN ('manual', 'coupon')
+        AND p.refundInvoiceItemId IS NULL
+        AND r.paymentId IS NULL
+        AND u.registered_at > CURDATE() - INTERVAL 1 DAY
+        AND u.registered_at < CURDATE() + INTERVAL 1 DAY;
+
+
+final_test:
+    type: sink
+    stream: false
+    format: jdbc
+    parent: "test_process"
+    mode: append
+    options:
+      driver: "com.mysql.cj.jdbc.Driver"
+      url: "jdbc:mysql://45.61.174.226:3306/analysis"
+      user: "root"
+      password: "adYhKpcEM8yAHYttrp"
+      database: "analysis"
+      dbtable: "analysis.conversion_analysis"
+      batchsize: 100
+
